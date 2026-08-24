@@ -209,7 +209,6 @@ package body Lempel_Ziv_Oberhumer is
             Off_High := Match_Offset / 256;
             Off_Low  := Match_Offset mod 256;
             
-            -- FIX: Cast Off_High to Byte before bitwise 'and' with 16#0F#
             Tag := 16#80# or Byte(Len_Code * 16) or (Byte(Off_High) and 16#0F#);
 
             if Out_Pos + 1 > Output'Last then
@@ -240,7 +239,6 @@ package body Lempel_Ziv_Oberhumer is
          Flush_Literals(Input, Lit_Start, Lit_Len, Output, Out_Pos);
       end if;
 
-      -- EOS Marker: Tag 0x80, Offset 0x00, Extra 0x00
       if Out_Pos + 2 > Output'Last then
          raise Buffer_Overrun_Error;
       end if;
@@ -301,7 +299,7 @@ package body Lempel_Ziv_Oberhumer is
             Offset := Off_High * 256 + Off_Low;
 
             if Len_Code = 0 and Offset = 0 then
-               exit; -- EOS Marker reached
+               exit;
             end if;
 
             Match_Len := Len_Code + 2;
@@ -398,7 +396,6 @@ package body Lempel_Ziv_Oberhumer is
          Flush_Literals(Input, Lit_Start, Lit_Len, Output, Out_Pos);
       end if;
 
-      -- EOS Marker: Tag 0xC0, Extra 0x00, Offset High 0x00, Offset Low 0x00
       if Out_Pos + 3 > Output'Last then
          raise Buffer_Overrun_Error;
       end if;
@@ -474,7 +471,7 @@ package body Lempel_Ziv_Oberhumer is
             In_Pos    := In_Pos + 3;
 
             if Extra_Len = 0 and Offset = 0 then
-               exit; -- EOS Marker
+               exit;
             end if;
 
             Match_Len := Extra_Len + 35;
@@ -684,7 +681,6 @@ package body Lempel_Ziv_Oberhumer is
             end if;
 
             if Match_Offset = Last_Offset and Match_Len <= 65 then
-               -- Recycled offset encoding tag (0x40)
                if Out_Pos > Output'Last then
                   raise Buffer_Overrun_Error;
                end if;
@@ -790,7 +786,7 @@ package body Lempel_Ziv_Oberhumer is
             end if;
             Offset := Natural(Input(In_Pos + 2)) * 256 + Natural(Input(In_Pos + 1));
             if Offset = 0 then
-               exit; -- EOS
+               exit;
             end if;
             raise Corrupt_Input_Error;
          end if;
@@ -800,7 +796,7 @@ package body Lempel_Ziv_Oberhumer is
    end Decompress_LZO1Z;
 
    ----------------------------------------------------------------------------
-   -- VARIANT 5: LZO_RLE (Run-Length Encoding pre-filter)
+   -- VARIANT 5: LZO_RLE (Pure Explicit Run-Length Filter)
    ----------------------------------------------------------------------------
    procedure Compress_LZO_RLE (
       Input      : in  Byte_Array;
@@ -811,59 +807,59 @@ package body Lempel_Ziv_Oberhumer is
       Out_Pos   : Natural := Output'First;
       Run_Val   : Byte;
       Run_Len   : Natural;
-      Sub_In    : Byte_Array(1 .. Input'Length);
-      Sub_Out   : Byte_Array(1 .. Max_Compressed_Size(Input'Length));
-      Sub_Len   : Natural;
-      Normal_In : Natural := 0;
+      Lit_Start : Natural := Input'First;
+      Lit_Len   : Natural := 0;
+
+      procedure Flush_RLE_Literals is
+      begin
+         if Lit_Len > 0 then
+            if Out_Pos + Lit_Len + 1 > Output'Last then
+               raise Buffer_Overrun_Error;
+            end if;
+            Output(Out_Pos) := 16#FE#; -- Literal Block Tag
+            Output(Out_Pos + 1) := Byte(Lit_Len);
+            Output(Out_Pos + 2 .. Out_Pos + 1 + Lit_Len) := Input(Lit_Start .. Lit_Start + Lit_Len - 1);
+            Out_Pos := Out_Pos + 2 + Lit_Len;
+            Lit_Len := 0;
+         end if;
+      end Flush_RLE_Literals;
    begin
       if Input'Length = 0 then
-         Compress_LZO1X(Input, Output, Output_Len);
+         Output_Len := 0;
          return;
       end if;
 
       while In_Pos <= Input'Last loop
          Run_Val := Input(In_Pos);
          Run_Len := 0;
-         while In_Pos + Run_Len <= Input'Last and then Input(In_Pos + Run_Len) = Run_Val loop
+         -- Limit run length to 255 to fit in a single 8-bit length field
+         while In_Pos + Run_Len <= Input'Last and then Input(In_Pos + Run_Len) = Run_Val and then Run_Len < 255 loop
             Run_Len := Run_Len + 1;
          end loop;
 
-         if Run_Len >= 4 then
-            if Normal_In > 0 then
-               Compress_LZO1X(Sub_In(1 .. Normal_In), Sub_Out, Sub_Len);
-               if Out_Pos + Sub_Len - 1 > Output'Last then
-                  raise Buffer_Overrun_Error;
-               end if;
-               Output(Out_Pos .. Out_Pos + Sub_Len - 1) := Sub_Out(1 .. Sub_Len);
-               Out_Pos   := Out_Pos + Sub_Len;
-               Normal_In := 0;
-            end if;
-
+         if Run_Len >= 3 then
+            Flush_RLE_Literals;
             if Out_Pos + 2 > Output'Last then
                raise Buffer_Overrun_Error;
             end if;
-
-            Output(Out_Pos)     := 16#FF#; -- RLE Marker Tag
+            Output(Out_Pos)     := 16#FF#; -- RLE Block Tag
             Output(Out_Pos + 1) := Run_Val;
-            Output(Out_Pos + 2) := Byte(Run_Len mod 256);
+            Output(Out_Pos + 2) := Byte(Run_Len);
             Out_Pos := Out_Pos + 3;
             In_Pos  := In_Pos + Run_Len;
+            Lit_Start := In_Pos;
          else
-            Normal_In := Normal_In + 1;
-            Sub_In(Normal_In) := Input(In_Pos);
-            In_Pos := In_Pos + 1;
+            Lit_Len := Lit_Len + 1;
+            In_Pos  := In_Pos + 1;
+            -- Limit literal block to 255
+            if Lit_Len = 255 then
+               Flush_RLE_Literals;
+               Lit_Start := In_Pos;
+            end if;
          end if;
       end loop;
 
-      if Normal_In > 0 then
-         Compress_LZO1X(Sub_In(1 .. Normal_In), Sub_Out, Sub_Len);
-         if Out_Pos + Sub_Len - 1 > Output'Last then
-            raise Buffer_Overrun_Error;
-         end if;
-         Output(Out_Pos .. Out_Pos + Sub_Len - 1) := Sub_Out(1 .. Sub_Len);
-         Out_Pos := Out_Pos + Sub_Len;
-      end if;
-
+      Flush_RLE_Literals;
       Output_Len := Out_Pos - Output'First;
    end Compress_LZO_RLE;
 
@@ -872,12 +868,11 @@ package body Lempel_Ziv_Oberhumer is
       Output     : out Byte_Array;
       Output_Len : out Natural
    ) is
-      In_Pos    : Natural := Input'First;
-      Out_Pos   : Natural := Output'First;
-      Run_Val   : Byte;
-      Run_Len   : Natural;
-      Sub_Out   : Byte_Array(1 .. Output'Length);
-      Sub_Len   : Natural;
+      In_Pos  : Natural := Input'First;
+      Out_Pos : Natural := Output'First;
+      Tag     : Byte;
+      Len     : Natural;
+      Val     : Byte;
    begin
       if Input'Length = 0 then
          Output_Len := 0;
@@ -885,32 +880,48 @@ package body Lempel_Ziv_Oberhumer is
       end if;
 
       while In_Pos <= Input'Last loop
-         if Input(In_Pos) = 16#FF# then
-            if In_Pos + 2 > Input'Last then
+         Tag := Input(In_Pos);
+         In_Pos := In_Pos + 1;
+
+         if Tag = 16#FF# then
+            if In_Pos + 1 > Input'Last then
                raise Corrupt_Input_Error;
             end if;
+            Val := Input(In_Pos);
+            Len := Natural(Input(In_Pos + 1));
+            In_Pos := In_Pos + 2;
 
-            Run_Val := Input(In_Pos + 1);
-            Run_Len := Natural(Input(In_Pos + 2));
-            In_Pos  := In_Pos + 3;
-
-            if Out_Pos + Run_Len - 1 > Output'Last then
+            if Out_Pos + Len - 1 > Output'Last then
                raise Buffer_Overrun_Error;
             end if;
 
-            for K in 0 .. Run_Len - 1 loop
-               Output(Out_Pos + K) := Run_Val;
+            for K in 0 .. Len - 1 loop
+               Output(Out_Pos + K) := Val;
             end loop;
-            Out_Pos := Out_Pos + Run_Len;
-         else
-            Decompress_LZO1X(Input(In_Pos .. Input'Last), Sub_Out, Sub_Len);
-            if Out_Pos + Sub_Len - 1 > Output'Last then
-               raise Buffer_Overrun_Error;
+            Out_Pos := Out_Pos + Len;
+
+         elsif Tag = 16#FE# then
+            if In_Pos > Input'Last then
+               raise Corrupt_Input_Error;
+            end if;
+            Len := Natural(Input(In_Pos));
+            In_Pos := In_Pos + 1;
+
+            if Len > 0 then
+               if In_Pos + Len - 1 > Input'Last then
+                  raise Corrupt_Input_Error;
+               end if;
+               if Out_Pos + Len - 1 > Output'Last then
+                  raise Buffer_Overrun_Error;
+               end if;
+
+               Output(Out_Pos .. Out_Pos + Len - 1) := Input(In_Pos .. In_Pos + Len - 1);
+               Out_Pos := Out_Pos + Len;
+               In_Pos  := In_Pos + Len;
             end if;
 
-            Output(Out_Pos .. Out_Pos + Sub_Len - 1) := Sub_Out(1 .. Sub_Len);
-            Out_Pos := Out_Pos + Sub_Len;
-            exit;
+         else
+            raise Corrupt_Input_Error;
          end if;
       end loop;
 
