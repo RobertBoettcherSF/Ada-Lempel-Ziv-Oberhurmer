@@ -208,7 +208,9 @@ package body Lempel_Ziv_Oberhumer is
 
             Off_High := Match_Offset / 256;
             Off_Low  := Match_Offset mod 256;
-            Tag      := 16#80# or Byte(Len_Code * 16) or Byte(Off_High and 16#0F#);
+            
+            -- FIX: Cast Off_High to Byte before bitwise 'and' with 16#0F#
+            Tag := 16#80# or Byte(Len_Code * 16) or (Byte(Off_High) and 16#0F#);
 
             if Out_Pos + 1 > Output'Last then
                raise Buffer_Overrun_Error;
