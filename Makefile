@@ -1,7 +1,7 @@
 .PHONY: all test run clean
 
 GNAT = gnatmake
-FLAGS = -gnat2012 -O2 -gnatwa -gnatat
+FLAGS = -gnat2012 -O2 -gnatwa -gnata
 OBJ_DIR = obj
 BIN_DIR = bin
 
