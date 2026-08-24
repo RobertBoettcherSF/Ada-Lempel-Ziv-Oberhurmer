@@ -43,7 +43,7 @@ package body Lempel_Ziv_Oberhumer is
                Input(Candidate + Len) = Input(Curr + Len) and then
                Len < Max_Len loop
             Len := Len + 1;
-         end while;
+         end loop;
 
          if Len >= Min_Len and then Len > Best_Len then
             Best_Len    := Len;
